@@ -1,5 +1,16 @@
-import React, { useState, useEffect, useMemo } from 'react';
-import { Plus, Trash2, Link2, CheckCircle2, AlertCircle, Circle, X, Search } from 'lucide-react';
+﻿import React, { useState, useEffect, useMemo } from 'react';
+import {
+  Plus,
+  Trash2,
+  Link2,
+  CheckCircle2,
+  AlertCircle,
+  Circle,
+  X,
+  Search,
+  Download,
+  LogOut,
+} from 'lucide-react';
 
 const COLORS = {
   forest: '#1B4332',
@@ -15,20 +26,53 @@ const COLORS = {
 };
 
 const METHODS = ['MTN Mobile Money', 'Airtel Money', 'Bank Transfer', 'Cheque', 'Cash'];
-const STORAGE_KEY = 'vinikam-payments-v1';
+const LEDGER_KEY = 'vinikam-payments-v1';
+const AUTH_KEY = 'vinikam-auth-v1';
+const TELLER_KEY = 'vinikam-tellers-v1';
+
+const DEFAULT_ADMIN = {
+  id: 'admin-1',
+  username: 'admin',
+  password: 'admin123',
+  fullName: 'System Administrator',
+  role: 'admin',
+  branch: 'Head Office',
+  status: 'active',
+};
+
+const DEFAULT_TELLERS = [
+  {
+    id: 'teller-1',
+    username: 'teller1',
+    password: 'teller123',
+    fullName: 'Sarah Nakato',
+    role: 'teller',
+    branch: 'Main Branch',
+    status: 'active',
+  },
+  {
+    id: 'teller-2',
+    username: 'teller2',
+    password: 'teller456',
+    fullName: 'Daniel Ssali',
+    role: 'teller',
+    branch: 'Kampala Branch',
+    status: 'active',
+  },
+];
 
 const storage = {
-  async get(key, fallback = null) {
+  get(key, fallback = null) {
     try {
-      const value = localStorage.getItem(key);
-      return value === null ? { value: fallback } : { value };
+      const raw = localStorage.getItem(key);
+      return raw === null ? fallback : JSON.parse(raw);
     } catch (error) {
-      return { value: fallback };
+      return fallback;
     }
   },
-  async set(key, value) {
+  set(key, value) {
     try {
-      localStorage.setItem(key, value);
+      localStorage.setItem(key, JSON.stringify(value));
       return true;
     } catch (error) {
       return false;
@@ -53,178 +97,112 @@ function todayISO() {
   return new Date().toISOString().slice(0, 10);
 }
 
-export default function App() {
-  const [orders, setOrders] = useState([]);
-  const [payments, setPayments] = useState([]);
-  const [tab, setTab] = useState('record');
-  const [loaded, setLoaded] = useState(false);
-  const [saveState, setSaveState] = useState('idle');
+function loadLedgerData() {
+  const saved = storage.get(LEDGER_KEY, { orders: [], payments: [] });
+  return {
+    orders: Array.isArray(saved.orders) ? saved.orders : [],
+    payments: Array.isArray(saved.payments) ? saved.payments : [],
+  };
+}
 
-  useEffect(() => {
-    (async () => {
-      try {
-        const res = await window.storage.get(STORAGE_KEY, false);
-        if (res && res.value) {
-          const data = JSON.parse(res.value);
-          setOrders(data.orders || []);
-          setPayments(data.payments || []);
-        }
-      } catch (e) {
-        // no existing data yet, that's fine
-      } finally {
-        setLoaded(true);
-      }
-    })();
-  }, []);
+function loadTellers() {
+  const saved = storage.get(TELLER_KEY, null);
+  if (Array.isArray(saved) && saved.length) return saved;
+  return DEFAULT_TELLERS;
+}
 
-  useEffect(() => {
-    if (!loaded) return;
-    setSaveState('saving');
-    const t = setTimeout(async () => {
-      try {
-        const result = await window.storage.set(
-          STORAGE_KEY,
-          JSON.stringify({ orders, payments }),
-          false
-        );
-        setSaveState(result ? 'saved' : 'error');
-      } catch (e) {
-        setSaveState('error');
-      }
-    }, 400);
-    return () => clearTimeout(t);
-  }, [orders, payments, loaded]);
+function loadCurrentUser() {
+  const saved = storage.get(AUTH_KEY, null);
+  return saved ? saved : null;
+}
 
-  const orderTotals = useMemo(() => {
-    const map = {};
-    for (const o of orders) map[o.id] = 0;
-    for (const p of payments) {
-      if (p.orderId && map[p.orderId] !== undefined) map[p.orderId] += Number(p.amount) || 0;
-    }
-    return map;
-  }, [orders, payments]);
+function exportCsv(records) {
+  const rows = [
+    ['Date', 'Customer', 'Amount', 'Method', 'Reference', 'Recorded By', 'Branch'],
+    ...records.map((entry) => [
+      entry.date || '',
+      entry.customer || '',
+      String(Number(entry.amount) || 0),
+      entry.method || '',
+      entry.reference || '',
+      entry.recordedBy || 'Admin',
+      entry.branch || 'Head Office',
+    ]),
+  ];
 
-  function orderStatus(order) {
-    const paid = orderTotals[order.id] || 0;
-    const due = Number(order.amount) || 0;
-    if (paid <= 0) return 'unpaid';
-    if (paid < due) return 'partial';
-    if (paid === due) return 'paid';
-    return 'over';
-  }
+  const csv = rows
+    .map((row) => row.map((cell) => `"${String(cell).replace(/"/g, '""')}"`).join(','))
+    .join('\n');
 
-  const unmatchedPayments = payments.filter((p) => !p.orderId);
-  const totalReceived = payments.reduce((s, p) => s + (Number(p.amount) || 0), 0);
-  const totalOutstanding = orders.reduce((s, o) => {
-    const paid = orderTotals[o.id] || 0;
-    const remaining = Math.max((Number(o.amount) || 0) - paid, 0);
-    return s + remaining;
-  }, 0);
-  const totalOrdersValue = orders.reduce((s, o) => s + (Number(o.amount) || 0), 0);
+  const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' });
+  const link = document.createElement('a');
+  link.href = URL.createObjectURL(blob);
+  link.download = 'vinikam-report.csv';
+  document.body.appendChild(link);
+  link.click();
+  document.body.removeChild(link);
+  URL.revokeObjectURL(link.href);
+}
 
-  function addPayment(p) {
-    setPayments((prev) => [{ ...p, id: uid() }, ...prev]);
-  }
-  function deletePayment(id) {
-    setPayments((prev) => prev.filter((p) => p.id !== id));
-  }
-  function matchPayment(paymentId, orderId) {
-    setPayments((prev) => prev.map((p) => (p.id === paymentId ? { ...p, orderId: orderId || null } : p)));
-  }
-  function addOrder(o) {
-    setOrders((prev) => [{ ...o, id: uid() }, ...prev]);
-  }
-  function deleteOrder(id) {
-    setOrders((prev) => prev.filter((o) => o.id !== id));
-    setPayments((prev) => prev.map((p) => (p.orderId === id ? { ...p, orderId: null } : p)));
-  }
+function AuthScreen({ onLogin, tellers }) {
+  const [username, setUsername] = useState('');
+  const [password, setPassword] = useState('');
+  const [error, setError] = useState('');
 
-  if (!loaded) {
-    return (
-      <div style={{ background: COLORS.cream, minHeight: '100%', display: 'flex', alignItems: 'center', justifyContent: 'center', fontFamily: 'ui-sans-serif, system-ui', color: COLORS.forest }}>
-        Loading payment records…
-      </div>
-    );
+  function submit(e) {
+    e.preventDefault();
+    const ok = onLogin(username, password);
+    if (!ok) setError('Invalid username or password.');
   }
 
   return (
-    <div style={{ background: COLORS.cream, minHeight: '100%', fontFamily: "'Inter', ui-sans-serif, system-ui, sans-serif", color: COLORS.ink }}>
-      <style>{`
-        * { box-sizing: border-box; }
-        input, select, textarea { font-family: inherit; }
-        input:focus, select:focus, textarea:focus { outline: 2px solid ${COLORS.orange}; outline-offset: 1px; }
-        button:focus-visible { outline: 2px solid ${COLORS.orange}; outline-offset: 2px; }
-        ::placeholder { color: #A79E86; }
-        .vf-btn { cursor: pointer; border: none; font-weight: 600; transition: transform .08s ease, background .15s ease; }
-        .vf-btn:active { transform: scale(0.97); }
-        .vf-tab { cursor: pointer; }
-        table { border-collapse: collapse; width: 100%; }
-        th { text-align: left; font-size: 11px; letter-spacing: 0.02em; color: ${COLORS.sage}; font-weight: 600; padding: 8px 10px; border-bottom: 1.5px solid ${COLORS.line}; }
-        td { padding: 10px 10px; border-bottom: 1px solid ${COLORS.line}; font-size: 13.5px; vertical-align: middle; }
-        tr:last-child td { border-bottom: none; }
-      `}</style>
-
-      <div style={{ background: COLORS.forest, padding: '20px 20px 0', color: '#fff' }}>
-        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', flexWrap: 'wrap', gap: 8 }}>
-          <div>
-            <div style={{ fontSize: 20, fontWeight: 700, letterSpacing: '-0.01em' }}>Vinikam Payment Ledger</div>
-            <div style={{ fontSize: 12.5, color: '#BFD4C4', marginTop: 2 }}>Record payments, then reconcile them against orders</div>
-          </div>
-          <div style={{ fontSize: 11, color: saveState === 'error' ? '#F3B8AE' : '#BFD4C4', display: 'flex', alignItems: 'center', gap: 5, marginTop: 4 }}>
-            <span style={{ width: 6, height: 6, borderRadius: 99, background: saveState === 'saving' ? COLORS.orange : saveState === 'error' ? COLORS.red : '#6FCF97', display: 'inline-block' }} />
-            {saveState === 'saving' ? 'Saving…' : saveState === 'error' ? 'Save failed — retrying next change' : 'Saved on this device'}
-          </div>
-        </div>
-
-        <div style={{ display: 'flex', gap: 1, marginTop: 18, background: COLORS.forestDark, borderRadius: '8px 8px 0 0', overflow: 'hidden' }}>
-          <SummaryCell label="Total received" value={fmt(totalReceived)} />
-          <SummaryCell label="Orders on file" value={fmt(totalOrdersValue)} />
-          <SummaryCell label="Outstanding" value={fmt(totalOutstanding)} accent={totalOutstanding > 0 ? COLORS.orange : '#6FCF97'} />
-          <SummaryCell label="Unmatched payments" value={unmatchedPayments.length} accent={unmatchedPayments.length > 0 ? COLORS.orange : '#6FCF97'} />
-        </div>
-
-        <div style={{ display: 'flex', gap: 4, marginTop: 0, paddingTop: 14 }}>
-          {[
-            ['record', 'Record payment'],
-            ['payments', `Payments (${payments.length})`],
-            ['orders', `Orders (${orders.length})`],
-            ['reconcile', 'Reconcile'],
-          ].map(([key, label]) => (
-            <div
-              key={key}
-              className="vf-tab"
-              onClick={() => setTab(key)}
-              style={{
-                padding: '9px 16px',
-                fontSize: 13,
-                fontWeight: 600,
-                borderRadius: '8px 8px 0 0',
-                background: tab === key ? COLORS.cream : 'transparent',
-                color: tab === key ? COLORS.forest : '#D8E6DB',
-              }}
-            >
-              {label}
+    <div style={{ minHeight: '100vh', background: 'linear-gradient(135deg, #0F2A20 0%, #1B4332 52%, #D97A2A 100%)', display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 24 }}>
+      <div style={{ width: '100%', maxWidth: 960, display: 'grid', gridTemplateColumns: '1.1fr 0.9fr', gap: 24 }}>
+        <div style={{ background: 'rgba(255,255,255,0.08)', border: '1px solid rgba(255,255,255,0.15)', borderRadius: 20, padding: 28, color: '#fff' }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 12, marginBottom: 18 }}>
+            <div style={{ width: 42, height: 42, borderRadius: 12, background: '#fff', color: COLORS.forest, display: 'flex', alignItems: 'center', justifyContent: 'center', fontWeight: 800 }}>V</div>
+            <div>
+              <div style={{ fontSize: 28, fontWeight: 800 }}>Vinikam Portal</div>
+              <div style={{ fontSize: 12, opacity: 0.8 }}>Admin and teller access</div>
             </div>
-          ))}
-        </div>
-      </div>
+          </div>
 
-      <div style={{ padding: 20, maxWidth: 980, margin: '0 auto' }}>
-        {tab === 'record' && <RecordPaymentPanel orders={orders} onAdd={addPayment} />}
-        {tab === 'payments' && (
-          <PaymentsPanel payments={payments} orders={orders} onDelete={deletePayment} onMatch={matchPayment} />
-        )}
-        {tab === 'orders' && <OrdersPanel orders={orders} orderTotals={orderTotals} onAdd={addOrder} onDelete={deleteOrder} />}
-        {tab === 'reconcile' && (
-          <ReconcilePanel
-            orders={orders}
-            payments={payments}
-            orderTotals={orderTotals}
-            orderStatus={orderStatus}
-            unmatchedPayments={unmatchedPayments}
-            onMatch={matchPayment}
-          />
-        )}
+          <div style={{ fontSize: 14, lineHeight: 1.7, opacity: 0.95, marginBottom: 20 }}>
+            Manage teller accounts, record payments, reconcile balances, and export full Excel-style reports from one platform.
+          </div>
+
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, minmax(0,1fr))', gap: 12 }}>
+            <MiniStat label="Portal users" value={tellers.length + 1} />
+            <MiniStat label="Financial" value="Live" />
+            <MiniStat label="Excel" value="CSV" />
+          </div>
+        </div>
+
+        <div style={{ background: '#fff', borderRadius: 20, padding: 28, boxShadow: '0 20px 40px rgba(0,0,0,0.15)' }}>
+          <div style={{ fontSize: 28, fontWeight: 800, color: COLORS.forest, marginBottom: 6 }}>Sign in</div>
+          <div style={{ fontSize: 13, color: COLORS.sage, marginBottom: 18 }}>Login to your admin or teller dashboard</div>
+
+          <form onSubmit={submit} style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
+            <Field label="Username">
+              <input value={username} onChange={(e) => setUsername(e.target.value)} style={inputStyle} placeholder="admin or teller1" />
+            </Field>
+            <Field label="Password">
+              <input value={password} onChange={(e) => setPassword(e.target.value)} type="password" style={inputStyle} placeholder="Password" />
+            </Field>
+            {error && <div style={{ color: COLORS.red, fontSize: 12, fontWeight: 600 }}>{error}</div>}
+            <button type="submit" style={{ background: COLORS.forest, color: '#fff', borderRadius: 10, padding: '12px 16px', border: 'none', fontWeight: 700, cursor: 'pointer' }}>
+              Login to portal
+            </button>
+          </form>
+
+          <div style={{ marginTop: 20, paddingTop: 18, borderTop: '1px solid #EEE5D5' }}>
+            <div style={{ fontSize: 12, color: COLORS.sage, marginBottom: 8, fontWeight: 700 }}>Demo access</div>
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 6, fontSize: 12, color: COLORS.ink }}>
+              <div><strong>Admin:</strong> admin / admin123</div>
+              <div><strong>Teller:</strong> teller1 / teller123</div>
+            </div>
+          </div>
+        </div>
       </div>
     </div>
   );
@@ -235,6 +213,41 @@ function SummaryCell({ label, value, accent }) {
     <div style={{ flex: 1, minWidth: 130, padding: '10px 16px', background: COLORS.forest }}>
       <div style={{ fontSize: 10.5, color: '#9FBBA7', textTransform: 'uppercase', letterSpacing: '0.04em' }}>{label}</div>
       <div style={{ fontSize: 17, fontWeight: 700, color: accent || '#fff', marginTop: 2 }}>{value}</div>
+    </div>
+  );
+}
+
+function MiniPanel({ label, value, tone }) {
+  const palette = {
+    forest: { bg: '#E8F3EE', color: COLORS.forest },
+    orange: { bg: '#FCE8D8', color: COLORS.orangeDark },
+    sage: { bg: '#EAF0EC', color: COLORS.sage },
+    red: { bg: '#FBE5E1', color: COLORS.red },
+  };
+  const selected = palette[tone] || palette.forest;
+
+  return (
+    <div style={{ background: selected.bg, borderRadius: 14, padding: '14px 12px', border: '1px solid rgba(0,0,0,0.03)' }}>
+      <div style={{ fontSize: 11, textTransform: 'uppercase', letterSpacing: '0.04em', color: selected.color, opacity: 0.9 }}>{label}</div>
+      <div style={{ fontSize: 24, fontWeight: 800, color: selected.color, marginTop: 5 }}>{value}</div>
+    </div>
+  );
+}
+
+function MiniStat({ label, value }) {
+  return (
+    <div style={{ background: 'rgba(255,255,255,0.08)', border: '1px solid rgba(255,255,255,0.08)', borderRadius: 12, padding: '12px 10px' }}>
+      <div style={{ fontSize: 11, opacity: 0.7 }}>{label}</div>
+      <div style={{ fontSize: 20, fontWeight: 800 }}>{value}</div>
+    </div>
+  );
+}
+
+function StatBox({ label, value }) {
+  return (
+    <div style={{ background: '#F6F2EA', borderRadius: 12, padding: 12, border: `1px solid ${COLORS.line}` }}>
+      <div style={{ fontSize: 11, textTransform: 'uppercase', letterSpacing: '0.05em', color: COLORS.sage }}>{label}</div>
+      <div style={{ fontSize: 20, fontWeight: 800, color: COLORS.forest, marginTop: 5 }}>{value}</div>
     </div>
   );
 }
@@ -266,6 +279,31 @@ const inputStyle = {
   background: '#FCFAF3',
 };
 
+function StatusBadge({ status }) {
+  const map = {
+    paid: { color: '#1F7A46', bg: '#E4F3EA', label: 'Fully paid', icon: CheckCircle2 },
+    partial: { color: COLORS.orangeDark, bg: '#FBEBDA', label: 'Partial', icon: AlertCircle },
+    unpaid: { color: '#8A8272', bg: '#EFEADA', label: 'Unpaid', icon: Circle },
+    over: { color: COLORS.red, bg: '#FBE4E1', label: 'Overpaid', icon: AlertCircle },
+  };
+  const details = map[status] || map.unpaid;
+  const Icon = details.icon;
+
+  return (
+    <span style={{ display: 'inline-flex', alignItems: 'center', gap: 4, fontSize: 11.5, fontWeight: 700, color: details.color, background: details.bg, padding: '3px 8px', borderRadius: 20 }}>
+      <Icon size={12} /> {details.label}
+    </span>
+  );
+}
+
+function EmptyState({ text, compact }) {
+  return (
+    <div style={{ textAlign: 'center', padding: compact ? '20px 10px' : '50px 20px', color: COLORS.sage, fontSize: 13 }}>
+      {text}
+    </div>
+  );
+}
+
 function RecordPaymentPanel({ orders, onAdd }) {
   const [form, setForm] = useState({
     customer: '',
@@ -277,8 +315,8 @@ function RecordPaymentPanel({ orders, onAdd }) {
     orderId: '',
   });
 
-  function update(key, val) {
-    setForm((f) => ({ ...f, [key]: val }));
+  function update(key, value) {
+    setForm((current) => ({ ...current, [key]: value }));
   }
 
   function submit(e) {
@@ -293,6 +331,7 @@ function RecordPaymentPanel({ orders, onAdd }) {
       note: form.note.trim(),
       orderId: form.orderId || null,
     });
+
     setForm({ customer: '', amount: '', method: form.method, date: todayISO(), reference: '', note: '', orderId: '' });
   }
 
@@ -313,8 +352,8 @@ function RecordPaymentPanel({ orders, onAdd }) {
         </Field>
         <Field label="Payment method">
           <select style={inputStyle} value={form.method} onChange={(e) => update('method', e.target.value)}>
-            {METHODS.map((m) => (
-              <option key={m} value={m}>{m}</option>
+            {METHODS.map((method) => (
+              <option key={method} value={method}>{method}</option>
             ))}
           </select>
         </Field>
@@ -325,8 +364,8 @@ function RecordPaymentPanel({ orders, onAdd }) {
           <Field label="Match to an order now (optional)">
             <select style={inputStyle} value={form.orderId} onChange={(e) => update('orderId', e.target.value)}>
               <option value="">Leave unmatched — reconcile later</option>
-              {orders.map((o) => (
-                <option key={o.id} value={o.id}>{o.reference} — {o.customer} — {fmt(o.amount)}</option>
+              {orders.map((order) => (
+                <option key={order.id} value={order.id}>{order.reference} — {order.customer} — {fmt(order.amount)}</option>
               ))}
             </select>
           </Field>
@@ -346,91 +385,11 @@ function RecordPaymentPanel({ orders, onAdd }) {
   );
 }
 
-function StatusBadge({ status }) {
-  const map = {
-    paid: { color: '#1F7A46', bg: '#E4F3EA', label: 'Fully paid', icon: CheckCircle2 },
-    partial: { color: COLORS.orangeDark, bg: '#FBEBDA', label: 'Partial', icon: AlertCircle },
-    unpaid: { color: '#8A8272', bg: '#EFEADA', label: 'Unpaid', icon: Circle },
-    over: { color: COLORS.red, bg: '#FBE4E1', label: 'Overpaid', icon: AlertCircle },
-  };
-  const s = map[status] || map.unpaid;
-  const Icon = s.icon;
-  return (
-    <span style={{ display: 'inline-flex', alignItems: 'center', gap: 4, fontSize: 11.5, fontWeight: 700, color: s.color, background: s.bg, padding: '3px 8px', borderRadius: 20 }}>
-      <Icon size={12} /> {s.label}
-    </span>
-  );
-}
-
-function PaymentsPanel({ payments, orders, onDelete, onMatch }) {
-  const [query, setQuery] = useState('');
-  const orderById = useMemo(() => Object.fromEntries(orders.map((o) => [o.id, o])), [orders]);
-
-  const filtered = payments.filter((p) => {
-    const q = query.toLowerCase();
-    if (!q) return true;
-    return p.customer.toLowerCase().includes(q) || (p.reference || '').toLowerCase().includes(q);
-  });
-
-  if (payments.length === 0) {
-    return <EmptyState text="No payments recorded yet. Use “Record payment” to log the first one." />;
-  }
-
-  return (
-    <Card>
-      <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 12 }}>
-        <div style={{ fontSize: 15, fontWeight: 700, color: COLORS.forest, flex: 1 }}>All payments</div>
-        <div style={{ position: 'relative' }}>
-          <Search size={14} style={{ position: 'absolute', left: 9, top: 9, color: COLORS.sage }} />
-          <input style={{ ...inputStyle, paddingLeft: 28, width: 200 }} placeholder="Search customer or ref" value={query} onChange={(e) => setQuery(e.target.value)} />
-        </div>
-      </div>
-      <div style={{ overflowX: 'auto' }}>
-        <table>
-          <thead>
-            <tr>
-              <th>Date</th><th>Customer</th><th>Amount</th><th>Method</th><th>Reference</th><th>Matched order</th><th></th>
-            </tr>
-          </thead>
-          <tbody>
-            {filtered.map((p) => (
-              <tr key={p.id}>
-                <td style={{ whiteSpace: 'nowrap', color: COLORS.sage }}>{p.date}</td>
-                <td style={{ fontWeight: 600 }}>{p.customer}</td>
-                <td style={{ fontWeight: 700 }}>{fmt(p.amount)}</td>
-                <td>{p.method}</td>
-                <td style={{ color: COLORS.sage }}>{p.reference || '—'}</td>
-                <td>
-                  <select
-                    style={{ ...inputStyle, padding: '5px 6px', fontSize: 12.5, minWidth: 150 }}
-                    value={p.orderId || ''}
-                    onChange={(e) => onMatch(p.id, e.target.value)}
-                  >
-                    <option value="">Unmatched</option>
-                    {orders.map((o) => (
-                      <option key={o.id} value={o.id}>{o.reference} — {o.customer}</option>
-                    ))}
-                  </select>
-                </td>
-                <td>
-                  <button className="vf-btn" onClick={() => onDelete(p.id)} style={{ background: 'transparent', color: COLORS.red, padding: 6 }} aria-label="Delete payment">
-                    <Trash2 size={15} />
-                  </button>
-                </td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
-      </div>
-    </Card>
-  );
-}
-
 function OrdersPanel({ orders, orderTotals, onAdd, onDelete }) {
   const [form, setForm] = useState({ customer: '', reference: '', amount: '', date: todayISO() });
 
-  function update(key, val) {
-    setForm((f) => ({ ...f, [key]: val }));
+  function update(key, value) {
+    setForm((current) => ({ ...current, [key]: value }));
   }
 
   function submit(e) {
@@ -473,17 +432,17 @@ function OrdersPanel({ orders, orderTotals, onAdd, onDelete }) {
               <tr><th>Reference</th><th>Customer</th><th>Value</th><th>Paid</th><th></th><th></th></tr>
             </thead>
             <tbody>
-              {orders.map((o) => {
-                const paid = orderTotals[o.id] || 0;
+              {orders.map((order) => {
+                const paid = orderTotals[order.id] || 0;
                 return (
-                  <tr key={o.id}>
-                    <td style={{ fontWeight: 700 }}>{o.reference}</td>
-                    <td>{o.customer}</td>
-                    <td>{fmt(o.amount)}</td>
-                    <td style={{ color: paid >= o.amount ? '#1F7A46' : COLORS.orangeDark, fontWeight: 600 }}>{fmt(paid)}</td>
-                    <td><StatusBadge status={paid <= 0 ? 'unpaid' : paid < o.amount ? 'partial' : paid === o.amount ? 'paid' : 'over'} /></td>
+                  <tr key={order.id}>
+                    <td style={{ fontWeight: 700 }}>{order.reference}</td>
+                    <td>{order.customer}</td>
+                    <td>{fmt(order.amount)}</td>
+                    <td style={{ color: paid >= order.amount ? '#1F7A46' : COLORS.orangeDark, fontWeight: 600 }}>{fmt(paid)}</td>
+                    <td><StatusBadge status={paid <= 0 ? 'unpaid' : paid < order.amount ? 'partial' : paid === order.amount ? 'paid' : 'over'} /></td>
                     <td>
-                      <button className="vf-btn" onClick={() => onDelete(o.id)} style={{ background: 'transparent', color: COLORS.red, padding: 6 }} aria-label="Delete order">
+                      <button className="vf-btn" onClick={() => onDelete(order.id)} style={{ background: 'transparent', color: COLORS.red, padding: 6 }} aria-label="Delete order">
                         <Trash2 size={15} />
                       </button>
                     </td>
@@ -498,10 +457,68 @@ function OrdersPanel({ orders, orderTotals, onAdd, onDelete }) {
   );
 }
 
+function PaymentsPanel({ payments, orders, onDelete, onMatch }) {
+  const [query, setQuery] = useState('');
+
+  const filtered = payments.filter((payment) => {
+    const search = query.toLowerCase();
+    if (!search) return true;
+    return payment.customer.toLowerCase().includes(search) || (payment.reference || '').toLowerCase().includes(search);
+  });
+
+  if (payments.length === 0) {
+    return <EmptyState text="No payments recorded yet. Use “Record payment” to log the first one." />;
+  }
+
+  return (
+    <Card>
+      <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 12 }}>
+        <div style={{ fontSize: 15, fontWeight: 700, color: COLORS.forest, flex: 1 }}>All payments</div>
+        <div style={{ position: 'relative' }}>
+          <Search size={14} style={{ position: 'absolute', left: 9, top: 9, color: COLORS.sage }} />
+          <input style={{ ...inputStyle, paddingLeft: 28, width: 200 }} placeholder="Search customer or ref" value={query} onChange={(e) => setQuery(e.target.value)} />
+        </div>
+      </div>
+      <div style={{ overflowX: 'auto' }}>
+        <table>
+          <thead>
+            <tr>
+              <th>Date</th><th>Customer</th><th>Amount</th><th>Method</th><th>Reference</th><th>Matched order</th><th></th>
+            </tr>
+          </thead>
+          <tbody>
+            {filtered.map((payment) => (
+              <tr key={payment.id}>
+                <td style={{ whiteSpace: 'nowrap', color: COLORS.sage }}>{payment.date}</td>
+                <td style={{ fontWeight: 600 }}>{payment.customer}</td>
+                <td style={{ fontWeight: 700 }}>{fmt(payment.amount)}</td>
+                <td>{payment.method}</td>
+                <td style={{ color: COLORS.sage }}>{payment.reference || '—'}</td>
+                <td>
+                  <select style={{ ...inputStyle, padding: '5px 6px', fontSize: 12.5, minWidth: 150 }} value={payment.orderId || ''} onChange={(e) => onMatch(payment.id, e.target.value)}>
+                    <option value="">Unmatched</option>
+                    {orders.map((order) => (
+                      <option key={order.id} value={order.id}>{order.reference} — {order.customer}</option>
+                    ))}
+                  </select>
+                </td>
+                <td>
+                  <button className="vf-btn" onClick={() => onDelete(payment.id)} style={{ background: 'transparent', color: COLORS.red, padding: 6 }} aria-label="Delete payment">
+                    <Trash2 size={15} />
+                  </button>
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+    </Card>
+  );
+}
+
 function ReconcilePanel({ orders, payments, orderTotals, orderStatus, unmatchedPayments, onMatch }) {
   const [pickingFor, setPickingFor] = useState(null);
-
-  const openOrders = orders.filter((o) => orderStatus(o) !== 'paid');
+  const openOrders = orders.filter((order) => orderStatus(order) !== 'paid');
 
   return (
     <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 16, alignItems: 'start' }}>
@@ -512,26 +529,19 @@ function ReconcilePanel({ orders, payments, orderTotals, orderStatus, unmatchedP
           <EmptyState text="Everything is matched. Nice and tidy." compact />
         ) : (
           <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
-            {unmatchedPayments.map((p) => (
-              <div key={p.id} style={{ border: `1px solid ${COLORS.line}`, borderRadius: 8, padding: 10 }}>
+            {unmatchedPayments.map((payment) => (
+              <div key={payment.id} style={{ border: `1px solid ${COLORS.line}`, borderRadius: 8, padding: 10 }}>
                 <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline' }}>
-                  <div style={{ fontWeight: 600, fontSize: 13.5 }}>{p.customer}</div>
-                  <div style={{ fontWeight: 700 }}>{fmt(p.amount)}</div>
+                  <div style={{ fontWeight: 600, fontSize: 13.5 }}>{payment.customer}</div>
+                  <div style={{ fontWeight: 700 }}>{fmt(payment.amount)}</div>
                 </div>
-                <div style={{ fontSize: 11.5, color: COLORS.sage, marginTop: 2 }}>{p.date} · {p.method} {p.reference ? `· ${p.reference}` : ''}</div>
-                {pickingFor === p.id ? (
+                <div style={{ fontSize: 11.5, color: COLORS.sage, marginTop: 2 }}>{payment.date} · {payment.method} {payment.reference ? `· ${payment.reference}` : ''}</div>
+                {pickingFor === payment.id ? (
                   <div style={{ display: 'flex', gap: 6, marginTop: 8 }}>
-                    <select
-                      autoFocus
-                      style={{ ...inputStyle, fontSize: 12.5, padding: '6px 8px' }}
-                      onChange={(e) => {
-                        if (e.target.value) { onMatch(p.id, e.target.value); setPickingFor(null); }
-                      }}
-                      defaultValue=""
-                    >
+                    <select autoFocus style={{ ...inputStyle, fontSize: 12.5, padding: '6px 8px' }} onChange={(e) => { if (e.target.value) { onMatch(payment.id, e.target.value); setPickingFor(null); } }} defaultValue="">
                       <option value="" disabled>Choose an order…</option>
-                      {orders.map((o) => (
-                        <option key={o.id} value={o.id}>{o.reference} — {o.customer} — {fmt(o.amount)}</option>
+                      {orders.map((order) => (
+                        <option key={order.id} value={order.id}>{order.reference} — {order.customer} — {fmt(order.amount)}</option>
                       ))}
                     </select>
                     <button className="vf-btn" onClick={() => setPickingFor(null)} style={{ background: '#EFEADA', color: COLORS.ink, borderRadius: 6, padding: '0 10px' }}>
@@ -539,11 +549,7 @@ function ReconcilePanel({ orders, payments, orderTotals, orderStatus, unmatchedP
                     </button>
                   </div>
                 ) : (
-                  <button
-                    className="vf-btn"
-                    onClick={() => setPickingFor(p.id)}
-                    style={{ marginTop: 8, background: COLORS.orange, color: '#fff', borderRadius: 6, padding: '6px 10px', fontSize: 12, display: 'inline-flex', alignItems: 'center', gap: 5 }}
-                  >
+                  <button className="vf-btn" onClick={() => setPickingFor(payment.id)} style={{ marginTop: 8, background: COLORS.orange, color: '#fff', borderRadius: 6, padding: '6px 10px', fontSize: 12, display: 'inline-flex', alignItems: 'center', gap: 5 }}>
                     <Link2 size={13} /> Match to order
                   </button>
                 )}
@@ -560,17 +566,17 @@ function ReconcilePanel({ orders, payments, orderTotals, orderStatus, unmatchedP
           <EmptyState text="No open balances. Every order on file is fully paid." compact />
         ) : (
           <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
-            {openOrders.map((o) => {
-              const paid = orderTotals[o.id] || 0;
-              const remaining = Math.max((Number(o.amount) || 0) - paid, 0);
+            {openOrders.map((order) => {
+              const paid = orderTotals[order.id] || 0;
+              const remaining = Math.max((Number(order.amount) || 0) - paid, 0);
               return (
-                <div key={o.id} style={{ border: `1px solid ${COLORS.line}`, borderRadius: 8, padding: 10 }}>
+                <div key={order.id} style={{ border: `1px solid ${COLORS.line}`, borderRadius: 8, padding: 10 }}>
                   <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline' }}>
-                    <div style={{ fontWeight: 700, fontSize: 13.5 }}>{o.reference} — {o.customer}</div>
-                    <StatusBadge status={orderStatus(o)} />
+                    <div style={{ fontWeight: 700, fontSize: 13.5 }}>{order.reference} — {order.customer}</div>
+                    <StatusBadge status={orderStatus(order)} />
                   </div>
                   <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 12.5, marginTop: 6, color: COLORS.sage }}>
-                    <span>Value {fmt(o.amount)}</span>
+                    <span>Value {fmt(order.amount)}</span>
                     <span>Paid {fmt(paid)}</span>
                     <span style={{ color: COLORS.orangeDark, fontWeight: 700 }}>Due {fmt(remaining)}</span>
                   </div>
@@ -584,10 +590,549 @@ function ReconcilePanel({ orders, payments, orderTotals, orderStatus, unmatchedP
   );
 }
 
-function EmptyState({ text, compact }) {
+function FinanceLedger({ orders, payments, addPayment, addOrder, deletePayment, deleteOrder, matchPayment, orderTotals, orderStatus, unmatchedPayments, currentUser }) {
+  const [tab, setTab] = useState('record');
+  const totalReceived = payments.reduce((sum, payment) => sum + (Number(payment.amount) || 0), 0);
+  const totalOrdersValue = orders.reduce((sum, order) => sum + (Number(order.amount) || 0), 0);
+  const totalOutstanding = orders.reduce((sum, order) => {
+    const paid = orderTotals[order.id] || 0;
+    return sum + Math.max((Number(order.amount) || 0) - paid, 0);
+  }, 0);
+
   return (
-    <div style={{ textAlign: 'center', padding: compact ? '20px 10px' : '50px 20px', color: COLORS.sage, fontSize: 13 }}>
-      {text}
+    <div style={{ background: '#fff', borderRadius: 18, border: `1px solid ${COLORS.line}` }}>
+      <div style={{ background: COLORS.forest, padding: '18px 20px 0', color: '#fff' }}>
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
+          <div>
+            <div style={{ fontSize: 12, letterSpacing: '0.08em', textTransform: 'uppercase', color: '#BFD4C4' }}>Finance ledger</div>
+            <div style={{ fontSize: 24, fontWeight: 800 }}>{currentUser?.role === 'teller' ? 'Teller ledger entry' : 'Finance ledger desk'}</div>
+          </div>
+          <div style={{ fontSize: 12, color: '#DDEEDD' }}>{currentUser?.fullName || 'Admin'} logged in</div>
+        </div>
+
+        <div style={{ display: 'flex', gap: 1, marginTop: 18, background: COLORS.forestDark, borderRadius: '8px 8px 0 0', overflow: 'hidden' }}>
+          <SummaryCell label="Total received" value={fmt(totalReceived)} />
+          <SummaryCell label="Orders on file" value={fmt(totalOrdersValue)} />
+          <SummaryCell label="Outstanding" value={fmt(totalOutstanding)} accent={totalOutstanding > 0 ? COLORS.orange : '#6FCF97'} />
+          <SummaryCell label="Unmatched payments" value={unmatchedPayments.length} accent={unmatchedPayments.length > 0 ? COLORS.orange : '#6FCF97'} />
+        </div>
+
+        <div style={{ display: 'flex', gap: 4, marginTop: 0, paddingTop: 14 }}>
+          {['record', 'payments', 'orders', 'reconcile'].map((key) => (
+            <div key={key} onClick={() => setTab(key)} style={{ cursor: 'pointer', padding: '9px 16px', fontSize: 13, fontWeight: 700, borderRadius: '8px 8px 0 0', background: tab === key ? COLORS.cream : 'transparent', color: tab === key ? COLORS.forest : '#D8E6DB', textTransform: 'capitalize' }}>
+              {key === 'record' ? 'Record payment' : key === 'payments' ? `Payments (${payments.length})` : key === 'orders' ? `Orders (${orders.length})` : 'Reconcile'}
+            </div>
+          ))}
+        </div>
+      </div>
+
+      <div style={{ padding: 20 }}>
+        {tab === 'record' && (
+          <RecordPaymentPanel
+            orders={orders}
+            onAdd={(payment) => addPayment({
+              ...payment,
+              teller: currentUser?.id || 'admin',
+              recordedBy: currentUser?.fullName || 'System Administrator',
+              branch: currentUser?.branch || 'Head Office',
+            })}
+          />
+        )}
+        {tab === 'payments' && <PaymentsPanel payments={payments} orders={orders} onDelete={deletePayment} onMatch={matchPayment} />}
+        {tab === 'orders' && <OrdersPanel orders={orders} orderTotals={orderTotals} onAdd={(order) => addOrder(order)} onDelete={deleteOrder} />}
+        {tab === 'reconcile' && (
+          <ReconcilePanel
+            orders={orders}
+            payments={payments}
+            orderTotals={orderTotals}
+            orderStatus={orderStatus}
+            unmatchedPayments={unmatchedPayments}
+            onMatch={matchPayment}
+          />
+        )}
+      </div>
     </div>
+  );
+}
+
+function ReportsPanel({ payments, orders, totalReceived, totalOutstanding, onExport }) {
+  const totalOrders = orders.reduce((sum, order) => sum + (Number(order.amount) || 0), 0);
+  const unmatched = payments.filter((payment) => !payment.orderId).length;
+
+  return (
+    <Card>
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 10, marginBottom: 14 }}>
+        <div style={{ fontSize: 18, fontWeight: 800, color: COLORS.forest }}>Excel report portal</div>
+        <button onClick={onExport} style={{ display: 'inline-flex', alignItems: 'center', gap: 8, background: COLORS.forest, color: '#fff', border: 'none', borderRadius: 10, padding: '10px 14px', fontWeight: 700, cursor: 'pointer' }}>
+          <Download size={16} /> Download Excel report
+        </button>
+      </div>
+      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, minmax(150px,1fr))', gap: 12 }}>
+        <MiniPanel label="Total received" value={fmt(totalReceived)} tone="forest" />
+        <MiniPanel label="Total orders" value={fmt(totalOrders)} tone="sage" />
+        <MiniPanel label="Outstanding" value={fmt(totalOutstanding)} tone="orange" />
+        <MiniPanel label="Unmatched" value={String(unmatched)} tone="red" />
+      </div>
+      <div style={{ marginTop: 20 }}>
+        <table>
+          <thead>
+            <tr><th>Customer</th><th>Amount</th><th>Method</th><th>Date</th><th>Reference</th></tr>
+          </thead>
+          <tbody>
+            {payments.slice(0, 8).map((payment) => (
+              <tr key={payment.id}>
+                <td>{payment.customer}</td>
+                <td>{fmt(payment.amount)}</td>
+                <td>{payment.method}</td>
+                <td>{payment.date}</td>
+                <td>{payment.reference || '—'}</td>
+              </tr>
+            ))}
+            {payments.length === 0 && (
+              <tr>
+                <td colSpan="5"><EmptyState text="No report data available yet." compact /></td>
+              </tr>
+            )}
+          </tbody>
+        </table>
+      </div>
+    </Card>
+  );
+}
+
+function AdminPortal({ orders, payments, tellers, setTellers, currentUser, onLogout, addPayment, addOrder, deletePayment, deleteOrder, matchPayment, orderTotals, orderStatus, unmatchedPayments, totalReceived, totalOutstanding, totalOrdersValue }) {
+  const [tab, setTab] = useState('dashboard');
+  const [newTeller, setNewTeller] = useState({ fullName: '', username: '', password: '', branch: 'Main Branch' });
+  const [formMessage, setFormMessage] = useState('');
+  const [formError, setFormError] = useState('');
+
+  function createTeller(e) {
+    e.preventDefault();
+    const fullName = newTeller.fullName.trim();
+    const username = newTeller.username.trim();
+    const password = newTeller.password.trim();
+
+    if (!fullName || !username || !password) {
+      setFormError('Please fill in the teller name, username and password.');
+      return;
+    }
+
+    if (tellers.some((teller) => teller.username.toLowerCase() === username.toLowerCase())) {
+      setFormError('That teller username already exists.');
+      return;
+    }
+
+    const account = { id: uid(), username, password, fullName, role: 'teller', branch: newTeller.branch || 'Main Branch', status: 'active' };
+    setTellers((previous) => [...previous, account]);
+    setNewTeller({ fullName: '', username: '', password: '', branch: 'Main Branch' });
+    setFormError('');
+    setFormMessage(`Teller account created for ${fullName}. Login username: ${username}`);
+  }
+
+  function exportAdminReport() {
+    exportCsv(payments);
+  }
+
+  return (
+    <div style={{ minHeight: '100vh', background: COLORS.cream }}>
+      <div style={{ maxWidth: 1200, margin: '0 auto', padding: 20 }}>
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 12, background: COLORS.forest, color: '#fff', borderRadius: 16, padding: '18px 20px' }}>
+          <div>
+            <div style={{ fontSize: 12, letterSpacing: '0.08em', textTransform: 'uppercase', color: '#BFD4C4' }}>Admin portal</div>
+            <div style={{ fontSize: 27, fontWeight: 800 }}>Welcome, {currentUser.fullName}</div>
+          </div>
+          <button onClick={onLogout} style={{ display: 'inline-flex', alignItems: 'center', gap: 8, background: '#fff', color: COLORS.forest, border: 'none', borderRadius: 10, padding: '10px 14px', fontWeight: 700, cursor: 'pointer' }}>
+            <LogOut size={16} /> Logout
+          </button>
+        </div>
+
+        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, minmax(150px,1fr))', gap: 12, marginTop: 18 }}>
+          <MiniPanel label="Total received" value={fmt(totalReceived)} tone="forest" />
+          <MiniPanel label="Outstanding" value={fmt(totalOutstanding)} tone="orange" />
+          <MiniPanel label="Teller accounts" value={String(tellers.filter((teller) => teller.role === 'teller').length)} tone="sage" />
+          <MiniPanel label="Unmatched" value={String(unmatchedPayments.length)} tone="red" />
+        </div>
+
+        <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', marginTop: 20 }}>
+          {['dashboard', 'tellers', 'reports', 'ledger'].map((item) => (
+            <button key={item} onClick={() => setTab(item)} style={{ border: 'none', borderRadius: 10, background: tab === item ? COLORS.forest : '#E9E2D1', color: tab === item ? '#fff' : COLORS.forest, padding: '10px 14px', fontWeight: 700, cursor: 'pointer', textTransform: 'capitalize' }}>
+              {item}
+            </button>
+          ))}
+        </div>
+
+        <div style={{ marginTop: 18 }}>
+          {tab === 'dashboard' && (
+            <div style={{ display: 'grid', gridTemplateColumns: '1.4fr 0.8fr', gap: 16 }}>
+              <Card>
+                <div style={{ fontSize: 18, fontWeight: 800, color: COLORS.forest, marginBottom: 10 }}>Portal control center</div>
+                <div style={{ display: 'grid', gridTemplateColumns: 'repeat(2, minmax(0,1fr))', gap: 12 }}>
+                  <StatBox label="Orders on file" value={fmt(totalOrdersValue)} />
+                  <StatBox label="Payments logged" value={String(payments.length)} />
+                  <StatBox label="Active tellers" value={String(tellers.filter((teller) => teller.role === 'teller' && teller.status !== 'inactive').length)} />
+                  <StatBox label="Open balances" value={fmt(totalOutstanding)} />
+                </div>
+              </Card>
+
+              <Card>
+                <div style={{ fontSize: 18, fontWeight: 800, color: COLORS.forest, marginBottom: 10 }}>Recent activity</div>
+                <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+                  {payments.slice(0, 5).map((payment) => (
+                    <div key={payment.id} style={{ border: `1px solid ${COLORS.line}`, borderRadius: 10, padding: 10 }}>
+                      <div style={{ display: 'flex', justifyContent: 'space-between', gap: 8 }}>
+                        <strong>{payment.customer}</strong>
+                        <span style={{ color: COLORS.orangeDark, fontWeight: 700 }}>{fmt(payment.amount)}</span>
+                      </div>
+                      <div style={{ fontSize: 12, color: COLORS.sage }}>{payment.date} · {payment.method}</div>
+                    </div>
+                  ))}
+                  {payments.length === 0 && <EmptyState text="No payment activity recorded yet." compact />}
+                </div>
+              </Card>
+            </div>
+          )}
+
+          {tab === 'tellers' && (
+            <div style={{ display: 'grid', gridTemplateColumns: '0.9fr 1.1fr', gap: 16 }}>
+              <Card>
+                <div style={{ fontSize: 18, fontWeight: 800, color: COLORS.forest, marginBottom: 12 }}>Create teller account</div>
+                <form onSubmit={createTeller} style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
+                  <Field label="Full name">
+                    <input value={newTeller.fullName} onChange={(e) => setNewTeller((previous) => ({ ...previous, fullName: e.target.value }))} style={inputStyle} placeholder="e.g. Jane Namuli" />
+                  </Field>
+                  <Field label="Username">
+                    <input value={newTeller.username} onChange={(e) => setNewTeller((previous) => ({ ...previous, username: e.target.value }))} style={inputStyle} placeholder="e.g. teller3" />
+                  </Field>
+                  <Field label="Password">
+                    <input value={newTeller.password} onChange={(e) => setNewTeller((previous) => ({ ...previous, password: e.target.value }))} type="password" style={inputStyle} placeholder="Create secure password" />
+                  </Field>
+                  <Field label="Branch">
+                    <input value={newTeller.branch} onChange={(e) => setNewTeller((previous) => ({ ...previous, branch: e.target.value }))} style={inputStyle} placeholder="Main Branch" />
+                  </Field>
+                  {formError && <div style={{ color: COLORS.red, fontSize: 12, fontWeight: 700 }}>{formError}</div>}
+                  {formMessage && <div style={{ color: '#1F7A46', fontSize: 12, fontWeight: 700 }}>{formMessage}</div>}
+                  <button type="submit" style={{ background: COLORS.orange, color: '#fff', border: 'none', borderRadius: 10, padding: '12px 14px', fontWeight: 700, cursor: 'pointer' }}>Create teller</button>
+                </form>
+              </Card>
+
+              <Card>
+                <div style={{ fontSize: 18, fontWeight: 800, color: COLORS.forest, marginBottom: 12 }}>Teller accounts</div>
+                <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+                  {tellers.filter((teller) => teller.role === 'teller').map((teller) => (
+                    <div key={teller.id} style={{ border: '1px solid #E7DFD0', borderRadius: 12, padding: 12 }}>
+                      <div style={{ display: 'flex', justifyContent: 'space-between', gap: 8 }}>
+                        <div>
+                          <div style={{ fontWeight: 800 }}>{teller.fullName}</div>
+                          <div style={{ fontSize: 12, color: COLORS.sage }}>{teller.branch}</div>
+                        </div>
+                        <div style={{ fontSize: 11, fontWeight: 700, background: teller.status === 'active' ? '#E6F6EE' : '#FBE9E6', color: teller.status === 'active' ? '#1F7A46' : COLORS.red, borderRadius: 999, padding: '4px 8px' }}>{teller.status || 'active'}</div>
+                      </div>
+                      <div style={{ marginTop: 8, fontSize: 12, color: COLORS.ink }}><strong>Username:</strong> {teller.username}</div>
+                      <div style={{ fontSize: 12, color: COLORS.ink }}><strong>Password:</strong> {teller.password}</div>
+                    </div>
+                  ))}
+                </div>
+              </Card>
+            </div>
+          )}
+
+          {tab === 'reports' && (
+            <ReportsPanel payments={payments} orders={orders} totalReceived={totalReceived} totalOutstanding={totalOutstanding} onExport={exportAdminReport} />
+          )}
+
+          {tab === 'ledger' && (
+            <FinanceLedger
+              orders={orders}
+              payments={payments}
+              addPayment={addPayment}
+              addOrder={addOrder}
+              deletePayment={deletePayment}
+              deleteOrder={deleteOrder}
+              matchPayment={matchPayment}
+              orderTotals={orderTotals}
+              orderStatus={orderStatus}
+              unmatchedPayments={unmatchedPayments}
+              currentUser={currentUser}
+            />
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function TellerPortal({ orders, payments, currentUser, onLogout, addPayment, deletePayment, matchPayment, orderTotals, orderStatus, unmatchedPayments, totalReceived, totalOutstanding, totalOrdersValue }) {
+  const [tab, setTab] = useState('dashboard');
+  const tellerPayments = payments.filter((payment) => payment.recordedBy === currentUser.fullName || payment.teller === currentUser.id || payment.teller === currentUser.username);
+
+  return (
+    <div style={{ minHeight: '100vh', background: COLORS.cream }}>
+      <div style={{ maxWidth: 1200, margin: '0 auto', padding: 20 }}>
+        <div style={{ background: COLORS.forest, color: '#fff', borderRadius: 16, padding: '18px 20px', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+          <div>
+            <div style={{ fontSize: 12, letterSpacing: '0.08em', textTransform: 'uppercase', color: '#BFD4C4' }}>Teller portal</div>
+            <div style={{ fontSize: 27, fontWeight: 800 }}>Welcome, {currentUser.fullName}</div>
+          </div>
+          <button onClick={onLogout} style={{ display: 'inline-flex', alignItems: 'center', gap: 8, background: '#fff', color: COLORS.forest, border: 'none', borderRadius: 10, padding: '10px 14px', fontWeight: 700, cursor: 'pointer' }}>
+            <LogOut size={16} /> Logout
+          </button>
+        </div>
+
+        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, minmax(150px,1fr))', gap: 12, marginTop: 18 }}>
+          <MiniPanel label="Today collection" value={fmt(totalReceived)} tone="forest" />
+          <MiniPanel label="Orders value" value={fmt(totalOrdersValue)} tone="orange" />
+          <MiniPanel label="Open balances" value={fmt(totalOutstanding)} tone="sage" />
+          <MiniPanel label="My entries" value={String(tellerPayments.length)} tone="red" />
+        </div>
+
+        <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', marginTop: 20 }}>
+          {['dashboard', 'transactions', 'reports', 'ledger'].map((item) => (
+            <button key={item} onClick={() => setTab(item)} style={{ border: 'none', borderRadius: 10, background: tab === item ? COLORS.forest : '#E9E2D1', color: tab === item ? '#fff' : COLORS.forest, padding: '10px 14px', fontWeight: 700, cursor: 'pointer', textTransform: 'capitalize' }}>
+              {item}
+            </button>
+          ))}
+        </div>
+
+        <div style={{ marginTop: 18 }}>
+          {tab === 'dashboard' && (
+            <div style={{ display: 'grid', gridTemplateColumns: '1.3fr 0.7fr', gap: 16 }}>
+              <Card>
+                <div style={{ fontSize: 18, fontWeight: 800, color: COLORS.forest, marginBottom: 10 }}>Current desk summary</div>
+                <div style={{ display: 'grid', gridTemplateColumns: 'repeat(2, minmax(0,1fr))', gap: 12 }}>
+                  <StatBox label="My entries" value={String(tellerPayments.length)} />
+                  <StatBox label="Matched payments" value={String(tellerPayments.filter((p) => p.orderId).length)} />
+                  <StatBox label="Awaiting match" value={String(tellerPayments.filter((p) => !p.orderId).length)} />
+                  <StatBox label="Branch" value={currentUser.branch || 'Main Branch'} />
+                </div>
+              </Card>
+
+              <Card>
+                <div style={{ fontSize: 18, fontWeight: 800, color: COLORS.forest, marginBottom: 10 }}>Latest payments</div>
+                <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+                  {tellerPayments.slice(0, 5).map((payment) => (
+                    <div key={payment.id} style={{ border: `1px solid ${COLORS.line}`, borderRadius: 10, padding: 10 }}>
+                      <div style={{ display: 'flex', justifyContent: 'space-between' }}>
+                        <strong>{payment.customer}</strong>
+                        <span style={{ color: COLORS.orangeDark, fontWeight: 700 }}>{fmt(payment.amount)}</span>
+                      </div>
+                      <div style={{ fontSize: 12, color: COLORS.sage }}>{payment.date}</div>
+                    </div>
+                  ))}
+                  {tellerPayments.length === 0 && <EmptyState text="You have not recorded any payment entries yet." compact />}
+                </div>
+              </Card>
+            </div>
+          )}
+
+          {tab === 'transactions' && (
+            <Card>
+              <div style={{ fontSize: 18, fontWeight: 800, color: COLORS.forest, marginBottom: 12 }}>My transaction log</div>
+              {tellerPayments.length === 0 ? (
+                <EmptyState text="No teller transactions yet." compact />
+              ) : (
+                <table>
+                  <thead>
+                    <tr><th>Date</th><th>Customer</th><th>Amount</th><th>Method</th><th>Reference</th></tr>
+                  </thead>
+                  <tbody>
+                    {tellerPayments.map((payment) => (
+                      <tr key={payment.id}>
+                        <td>{payment.date}</td>
+                        <td>{payment.customer}</td>
+                        <td>{fmt(payment.amount)}</td>
+                        <td>{payment.method}</td>
+                        <td>{payment.reference || '—'}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              )}
+            </Card>
+          )}
+
+          {tab === 'reports' && (
+            <ReportsPanel payments={payments} orders={orders} totalReceived={totalReceived} totalOutstanding={totalOutstanding} onExport={() => exportCsv(payments)} />
+          )}
+
+          {tab === 'ledger' && (
+            <FinanceLedger
+              orders={orders}
+              payments={payments}
+              addPayment={addPayment}
+              deletePayment={deletePayment}
+              matchPayment={matchPayment}
+              orderTotals={orderTotals}
+              orderStatus={orderStatus}
+              unmatchedPayments={unmatchedPayments}
+              currentUser={currentUser}
+            />
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+export default function App() {
+  const [orders, setOrders] = useState([]);
+  const [payments, setPayments] = useState([]);
+  const [tellers, setTellers] = useState(() => loadTellers());
+  const [currentUser, setCurrentUser] = useState(() => loadCurrentUser());
+  const [loaded, setLoaded] = useState(false);
+  const [saveState, setSaveState] = useState('idle');
+
+  useEffect(() => {
+    const data = loadLedgerData();
+    setOrders(data.orders);
+    setPayments(data.payments);
+    setLoaded(true);
+  }, []);
+
+  useEffect(() => {
+    if (!loaded) return;
+    setSaveState('saving');
+    const timer = setTimeout(() => {
+      const ok = storage.set(LEDGER_KEY, { orders, payments });
+      setSaveState(ok ? 'saved' : 'error');
+    }, 300);
+    return () => clearTimeout(timer);
+  }, [orders, payments, loaded]);
+
+  useEffect(() => {
+    storage.set(TELLER_KEY, tellers);
+  }, [tellers]);
+
+  useEffect(() => {
+    if (!currentUser) {
+      storage.set(AUTH_KEY, null);
+      return;
+    }
+    storage.set(AUTH_KEY, currentUser);
+  }, [currentUser]);
+
+  const orderTotals = useMemo(() => {
+    const map = {};
+    for (const order of orders) map[order.id] = 0;
+    for (const payment of payments) {
+      if (payment.orderId && map[payment.orderId] !== undefined) map[payment.orderId] += Number(payment.amount) || 0;
+    }
+    return map;
+  }, [orders, payments]);
+
+  function orderStatus(order) {
+    const paid = orderTotals[order.id] || 0;
+    const due = Number(order.amount) || 0;
+    if (paid <= 0) return 'unpaid';
+    if (paid < due) return 'partial';
+    if (paid === due) return 'paid';
+    return 'over';
+  }
+
+  const unmatchedPayments = payments.filter((payment) => !payment.orderId);
+  const totalReceived = payments.reduce((sum, payment) => sum + (Number(payment.amount) || 0), 0);
+  const totalOutstanding = orders.reduce((sum, order) => {
+    const paid = orderTotals[order.id] || 0;
+    return sum + Math.max((Number(order.amount) || 0) - paid, 0);
+  }, 0);
+  const totalOrdersValue = orders.reduce((sum, order) => sum + (Number(order.amount) || 0), 0);
+
+  function addPayment(payment) {
+    const newPayment = {
+      ...payment,
+      id: uid(),
+      teller: payment.teller || currentUser?.id || 'admin',
+      recordedBy: payment.recordedBy || currentUser?.fullName || 'System Administrator',
+      branch: payment.branch || currentUser?.branch || 'Head Office',
+    };
+    setPayments((previous) => [newPayment, ...previous]);
+  }
+
+  function deletePayment(id) {
+    setPayments((previous) => previous.filter((payment) => payment.id !== id));
+  }
+
+  function matchPayment(paymentId, orderId) {
+    setPayments((previous) => previous.map((payment) => (payment.id === paymentId ? { ...payment, orderId: orderId || null } : payment)));
+  }
+
+  function addOrder(order) {
+    setOrders((previous) => [{ ...order, id: uid(), createdBy: currentUser?.fullName || 'System Administrator' }, ...previous]);
+  }
+
+  function deleteOrder(id) {
+    setOrders((previous) => previous.filter((order) => order.id !== id));
+    setPayments((previous) => previous.map((payment) => (payment.orderId === id ? { ...payment, orderId: null } : payment)));
+  }
+
+  function handleLogin(username, password) {
+    const normalized = String(username || '').trim();
+    const typedPassword = String(password || '').trim();
+
+    if (normalized === DEFAULT_ADMIN.username && typedPassword === DEFAULT_ADMIN.password) {
+      setCurrentUser({ ...DEFAULT_ADMIN, password: DEFAULT_ADMIN.password });
+      return true;
+    }
+
+    const foundTeller = tellers.find((user) => user.role === 'teller' && user.username === normalized && user.password === typedPassword);
+    if (foundTeller) {
+      setCurrentUser({ ...foundTeller, password: foundTeller.password });
+      return true;
+    }
+
+    return false;
+  }
+
+  if (!loaded) {
+    return (
+      <div style={{ background: COLORS.cream, minHeight: '100vh', display: 'flex', alignItems: 'center', justifyContent: 'center', fontFamily: 'ui-sans-serif, system-ui', color: COLORS.forest }}>
+        Loading portal…
+      </div>
+    );
+  }
+
+  if (!currentUser) {
+    return <AuthScreen onLogin={handleLogin} tellers={tellers} />;
+  }
+
+  if (currentUser.role === 'admin') {
+    return (
+      <AdminPortal
+        orders={orders}
+        payments={payments}
+        tellers={tellers}
+        setTellers={setTellers}
+        currentUser={currentUser}
+        onLogout={() => setCurrentUser(null)}
+        addPayment={addPayment}
+        addOrder={addOrder}
+        deletePayment={deletePayment}
+        deleteOrder={deleteOrder}
+        matchPayment={matchPayment}
+        orderTotals={orderTotals}
+        orderStatus={orderStatus}
+        unmatchedPayments={unmatchedPayments}
+        totalReceived={totalReceived}
+        totalOutstanding={totalOutstanding}
+        totalOrdersValue={totalOrdersValue}
+      />
+    );
+  }
+
+  return (
+    <TellerPortal
+      orders={orders}
+      payments={payments}
+      currentUser={currentUser}
+      onLogout={() => setCurrentUser(null)}
+      addPayment={addPayment}
+      deletePayment={deletePayment}
+      matchPayment={matchPayment}
+      orderTotals={orderTotals}
+      orderStatus={orderStatus}
+      unmatchedPayments={unmatchedPayments}
+      totalReceived={totalReceived}
+      totalOutstanding={totalOutstanding}
+      totalOrdersValue={totalOrdersValue}
+    />
   );
 }
